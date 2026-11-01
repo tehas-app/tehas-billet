@@ -1,0 +1,79 @@
+:root {
+  color-scheme: light dark;
+  --ink: #1d1f21;
+  --paper: #fbfaf7;
+  --line: #c9c6bd;
+  --accent: #245d8f;
+  --alert: #a12a1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e6e1;
+    --paper: #191b1d;
+    --line: #4a4d50;
+    --accent: #8ec1ee;
+    --alert: #f2a097;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 1rem/1.5 system-ui, sans-serif;
+}
+
+main {
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+label {
+  display: block;
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+input {
+  flex: 1;
+  min-width: 0;
+}
+
+input,
+button {
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+[role="alert"] {
+  color: var(--alert);
+}

@@ -1,0 +1,39 @@
+# The gate, run on every pull request and on main. It only reads the
+# repository. A pull request from a fork does not run it.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, tehas]
+    timeout-minutes: 30
+    env:
+      NODE_VERSION: 22.22.1
+      NODE_SHA256: 9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: node at the pinned version
+        run: |
+          mkdir -p "$RUNNER_TEMP/node"
+          curl -fsSL -o "$RUNNER_TEMP/node.tar.xz" \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.xz"
+          echo "$NODE_SHA256  $RUNNER_TEMP/node.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node" --strip-components=1
+          echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
+      - name: scripts/worktree-setup.sh
+        run: scripts/worktree-setup.sh
+      - name: scripts/verify.sh
+        run: scripts/verify.sh
+      - name: test/billet_test.sh
+        run: test/billet_test.sh
+      - name: scripts/verify-full.sh
+        run: scripts/verify-full.sh
+      - name: scripts/smoke.sh
+        run: scripts/smoke.sh

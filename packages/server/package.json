@@ -1,0 +1,13 @@
+{
+  "name": "@billet/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/routes.ts" },
+  "dependencies": {
+    "@billet/api": "*",
+    "@effect/platform-node": "4.1.0",
+    "@effect/sql-sqlite-node": "4.1.0",
+    "effect": "4.1.0"
+  }
+}
