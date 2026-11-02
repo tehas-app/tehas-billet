@@ -73,7 +73,7 @@ check "GET /api/notes/999 is a 404" 404 "$(status "$base/api/notes/999")"
 check "GET /api/nope is a 404" 404 "$(status "$base/api/nope")"
 
 # The fallback to index.html answers only a request that accepts HTML.
-page() { curl -s -H 'accept: text/html' "$1" | grep -c '<div id="root">'; }
+page() { curl -s -H 'accept: text/html' "$1" | grep -c '<billet-app>'; }
 check "GET / is the built page" 1 "$(page "$base/")"
 check "GET /notes/1 is the built page" 1 "$(page "$base/notes/1")"
 

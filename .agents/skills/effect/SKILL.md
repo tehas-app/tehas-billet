@@ -162,11 +162,11 @@ const makeClient = HttpApiTest.groups(Api, ["notes"])
       assert.strictEqual(error._tag, "NotFound")
 ```
 
-## The React bindings
+## The atoms and the page
 
-`ai-docs` has no page on these. This section and `packages/web/` are the reference,
-with the source in `node_modules/@effect/atom-react/src/Hooks.ts` and
-`node_modules/effect/src/reactivity/AtomHttpApi.ts`.
+`ai-docs` has no page on `effect/reactivity`. The reference is the source in
+`node_modules/effect/src/reactivity/` and `packages/web/` here. The page holds no
+framework: custom elements, and the rendering in `packages/web/src/dom.ts`.
 
 The client is derived from the API. A query is an atom, and `query` keeps one atom
 for each set of arguments, so calling it during a render is safe.
@@ -180,27 +180,42 @@ export class NotesClient extends AtomHttpApi.Service<NotesClient>()("@billet/web
 
 ```ts packages/web/src/client.ts
 export const notes = NotesClient.query("notes", "list", { reactivityKeys: [notesKey] })
-export const note = (id: number) => NotesClient.query("notes", "read", { params: { id } })
-export const createNote = NotesClient.mutation("notes", "create")
 ```
 
-A mutation that names the key refreshes each query that names it, so there is no
-manual refresh.
+A query is named by the request it makes, and that name is the registry's cache
+key, so a query built inside a render is a different atom from the one before.
+`note` keeps one atom per id in a map for that reason. A mutation that names the
+key refreshes each query that names it, so there is no manual refresh.
 
-```tsx packages/web/src/App.tsx
-    save({ payload: { title: trimmed }, reactivityKeys: [notesKey] }).then(
+A view that reads an atom extends `AtomElement` and is drawn by `view`; it matches
+on the result, and `AsyncResult.builder` tells a declared error from any other
+failure.
+
+```ts packages/web/src/App.ts
+        AsyncResult.builder(result)
+          .onInitial(loading)
+          .onErrorTag("NotFound", () => warning(`There is no note ${id}.`))
+          .onFailure(() => warning("The note could not be loaded."))
 ```
 
 A `mutation` is one atom per endpoint, and a call on it interrupts the call before.
-Where only one call can run, as in a form, keep the button off while it does:
+Where only one call can run, as in a form, keep the button off while it does. The
+element holds that itself, because a page drawn again must not switch it back on:
 
-```tsx packages/web/src/App.tsx
-  const saving = AsyncResult.isWaiting(useAtomValue(createNote))
+```ts packages/web/src/App.ts
+    this.#saving = true
+    this.#button.disabled = true
 ```
 
-Where a person can start a second call while the first runs, as with a checkbox on
-each row, use `runtime.fn` with `concurrent`. Nothing in this repository needs it
-yet, so this sample is not a file here:
+```ts packages/web/src/App.ts
+    this.run(createNote, { payload: { title: trimmed }, reactivityKeys: [notesKey] }).then(
+```
+
+`run` is `AtomElement`'s: it opens the subscription before the write and settles
+when a result arrives, which is what the button waits for. Where a person can
+start a second call while the first runs, as with a checkbox on each row, use
+`runtime.fn` with `concurrent`. Nothing in this repository needs it yet, so this
+sample is not a file here:
 
 ```ts
 export const setTodoDone = TodosClient.runtime.fn<{ readonly id: number; readonly done: boolean }>()(
@@ -212,21 +227,11 @@ export const setTodoDone = TodosClient.runtime.fn<{ readonly id: number; readonl
 )
 ```
 
-A view matches on the result. `AsyncResult.builder` tells a declared error from
-any other failure.
-
-```tsx packages/web/src/App.tsx
-      {AsyncResult.builder(result)
-        .onInitial(() => <p>Loading…</p>)
-        .onErrorTag("NotFound", () => <p role="alert">There is no note {id}.</p>)
-        .onFailure(() => <p role="alert">The note could not be loaded.</p>)
-```
-
 A test replaces the client through the runtime's layer atom, so the components and
 the atoms run unchanged.
 
-```tsx packages/web/test/App.test.tsx
-    <RegistryProvider initialValues={[[NotesClient.runtime.layer, fakeClient(stored)]]}>
+```ts packages/web/test/App.test.ts
+    initialValues: [[NotesClient.runtime.layer as unknown as Atom.Atom<unknown>, fakeClient(stored, beforeSave)]],
 ```
 
 ## Traps
@@ -249,7 +254,7 @@ Each of these was hit while building this repository, unless it says otherwise.
   statement, and the loader fails with a `MigrationError` on a file with two. A
   trigger has semicolons in its body, so the loader refuses that too.
 - **A second `mutation` call cancels the first, with no error.** The first request
-  is interrupted and its work may be lost. See The React bindings above.
+  is interrupted and its work may be lost. See The atoms and the page above.
 - **A `Config` has no `.asEffect()`.** Yield it inside `Effect.gen`.
 - **The port opens before the handler attaches.** `NodeHttpServer` listens first
   and `HttpRouter.serve` attaches next, and a request in that gap is accepted and
