@@ -257,30 +257,43 @@ export const patch = (parent: Node, next: ReadonlyArray<Node | string>) => {
 
   const spare = [...parent.childNodes]
   const kept: Array<Node> = []
-  const taken = new Set<Node>()
+  // Nodes this pass has already placed, so one node cannot serve two slots and a
+  // node already in the tree is copied rather than moved.
+  const claimed = new Set<Node>()
 
   for (const node of wanted) {
+    // A view that hands the same node to two slots would silently lose one of
+    // them, because a node is only ever in the tree once. Copy it instead, so two
+    // wanted children always leave two children.
+    if (claimed.has(node)) {
+      const copy = node.cloneNode(true)
+      claimed.add(copy)
+      kept.push(copy)
+      continue
+    }
     const isElement = node.nodeType === Node.ELEMENT_NODE
     const reusable = isElement && !node.nodeName.includes("-")
 
-    let match = spare.findIndex((old) => !taken.has(old) && sameAs(old, node))
+    let match = spare.findIndex((old) => !claimed.has(old) && sameAs(old, node))
     if (match === -1 && isElement) {
       // Same tag, different content: keep the shell and fix what is inside it, so
       // a focus inside it survives an update of its text.
       match = reusable
-        ? spare.findIndex((old) => !taken.has(old) && old.nodeName === node.nodeName && !old.nodeName.includes("-"))
+        ? spare.findIndex((old) => !claimed.has(old) && old.nodeName === node.nodeName && !old.nodeName.includes("-"))
         : -1
     }
 
     if (match === -1) {
       // A node made this render. Nothing else can claim it, and a node still held
       // elsewhere is copied rather than moved, so patch cannot lose a subtree.
-      kept.push(node.parentNode === null ? node : node.cloneNode(true))
+      const made = node.parentNode === null ? node : node.cloneNode(true)
+      claimed.add(made)
+      kept.push(made)
       continue
     }
 
     const [old] = spare.splice(match, 1) as [Node]
-    taken.add(old)
+    claimed.add(old)
     if (old !== node && isElement) {
       updateAttributes(old as Element, node as Element)
       copyProperties(old as HTMLElement, node as HTMLElement)

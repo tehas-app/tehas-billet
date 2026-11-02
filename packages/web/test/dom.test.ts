@@ -331,6 +331,48 @@ describe("patch keeps focus, which is why it exists", () => {
 })
 
 describe("patch cost stays usable for a list", () => {
+  it("keeps focus on a link in a list that did not change, but not in one that reordered", () => {
+    // The case patch fixes, and the case it does not. A browser blurs a node it
+    // detaches and reinserts, and a move detaches, so reordering a list loses the
+    // caret inside it no matter how good the reconciler is. A list that sorts or
+    // filters has to restore focus itself, or keep the order stable while typing.
+    const list = (rows: Array<string>) =>
+      h("ul", null, ...rows.map((n) => h("li", null, h("a", { href: `/notes/${n}` }, `note ${n}`))))
+
+    render(root, list(["1", "2", "3"]))
+    const third = root.querySelectorAll("a")[2] as HTMLElement
+    third.focus()
+    render(root, list(["1", "2", "3"]))
+    assert.strictEqual(document.activeElement, third, "an unchanged list should not move the focus")
+
+    render(root, list(["3", "2", "1"]))
+    assert.strictEqual(
+      [...root.querySelectorAll("a")].map((a) => a.getAttribute("href")).join(","),
+      "/notes/3,/notes/2,/notes/1"
+    )
+    assert.notStrictEqual(document.activeElement, third, "documented limit: a move blurs the node")
+  })
+
+  it("keeps both rows when a view hands the same node to two slots", () => {
+    // A node is only ever in the tree once, so without copying, the second slot
+    // silently wins and a row disappears.
+    const shared = h("p", null, "same")
+    patch(root, [shared, shared])
+    assert.strictEqual(root.childNodes.length, 2, "one of the two rows was dropped")
+    assert.strictEqual(root.textContent, "samesame")
+  })
+
+  it("patching the same render twice gives the same result", () => {
+    // A fragment empties when its children are moved, so patch has to copy what it
+    // is given. If it did not, a memoized view patched twice would clear the page.
+    const view = h(Fragment, null, h("p", null, "a"), h("p", null, "b"))
+    patch(root, nodes(view))
+    const after = root.textContent
+    patch(root, nodes(view))
+    assert.strictEqual(root.textContent, after, "a second patch of the same render changed the page")
+    assert.strictEqual(root.textContent, "ab")
+  })
+
   it("refreshes 200 unchanged rows quickly", () => {
     const list = (n: number) => h("ul", null, ...Array.from({ length: n }, (_, i) => h("li", null, `row ${i}`)))
     render(root, list(200))
