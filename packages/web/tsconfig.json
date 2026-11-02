@@ -3,7 +3,6 @@
   "compilerOptions": {
     "module": "esnext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx",
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"]

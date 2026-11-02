@@ -19,9 +19,12 @@
   SQL, all from the `effect` package. See `.agents/skills/effect/SKILL.md`.
 - Effect `HttpApi`: one definition in `packages/api`, shared by the server and
   the client. There is no hand-written fetch code.
-- React 19 with Vite 8. `@effect/atom-react` where a component needs server
-  state, plain React for the rest, and a few lines of plain CSS. There is no
-  router library and no styling framework.
+- No view framework. The web layer is the browser's own: custom elements and a
+  small rendering file the project owns, `packages/web/src/dom.ts` — `h` builds
+  nodes, `patch` updates them without moving focus, and `AtomElement` is the base
+  a view that reads an atom extends. Vite 8 bundles it, and atoms from Effect's
+  own reactivity module hold server state. A few lines of plain CSS; no router
+  library and no styling framework.
 - Vitest with `@effect/vitest`, `cargo test`, and Playwright for the whole path.
 - No ORM: `SqlModel` is not used here, and SQL is written as SQL. No auth.
 
@@ -45,7 +48,9 @@ at start. Each file holds one statement, and the start stops on a file with two.
 - `packages/server/src/native.ts`: loads the Rust addon.
 - `packages/server/src/main.ts`: the entry point. Node runs it directly.
 - `packages/web/src/client.ts`: the typed client and its atoms.
-- `packages/web/src/App.tsx`: the views. `packages/web/src/route.tsx`: the paths.
+- `packages/web/src/dom.ts`: the rendering, and the file to edit when the way the
+  page updates needs to change. `packages/web/src/App.ts`: the views.
+  `packages/web/src/route.ts`: the paths.
 - `packages/web/test/`: component tests. `packages/web/test/e2e/`: Playwright.
 - `migrations/`: the schema. `crates/example/`: the Rust crate.
 - `scripts/`: setup and gates. `test/billet_test.sh`: the shape of the billet.
@@ -76,15 +81,15 @@ Tests first in each of these. Run `scripts/verify.sh` after each step.
   4. A column whose shape differs from the API gets a Schema for the difference:
      `Schema.BooleanFromBit` stores a boolean as 0 or 1.
 - **Add a page:**
-  1. Add the view to `packages/web/src/App.tsx` and its path to `App`, in the
-     way `NoteDetail` is added. Use `Link` from `packages/web/src/route.tsx`.
+  1. Add the view to `packages/web/src/App.ts` and its path to `App`, in the
+     way `NoteDetail` is added. Use `Link` from `packages/web/src/route.ts`.
   2. A page must not share a path with the API. The API lives under `/api`, and
      the server answers an unknown path with `index.html`.
   3. Server state goes in an atom in `packages/web/src/client.ts`. A mutation
      that changes a list names the list's `reactivityKeys`. A mutation a person
      can repeat before the last one lands needs care: see the traps in
      `.agents/skills/effect/SKILL.md`.
-  4. Test it as `packages/web/test/App.test.tsx` does, with the client replaced.
+  4. Test it as `packages/web/test/App.test.ts` does, with the client replaced.
 - **Move a hot path to Rust:**
   1. Measure it first, and keep the number for the pull request.
   2. Add a `#[napi]` function with a `cargo test` to `crates/example/src/lib.rs`.
@@ -102,8 +107,9 @@ Tests first in each of these. Run `scripts/verify.sh` after each step.
 - `node_modules/effect/ai-docs/`: runnable examples.
   `.agents/skills/effect/SKILL.md` says which one to read for what.
 - `AGENTS.md`: the rules of this repository.
-- The gap: the React bindings have no page in `ai-docs`. For them the reference
-  is `packages/web/` here and the source in `node_modules/@effect/atom-react/src/`.
+- The gap: the rendering in `packages/web/src/dom.ts` is ours, so no guide covers
+  it. The reference is that file and the invariants tested in
+  `packages/web/test/dom.test.ts`.
 
 ## Deviations
 
@@ -119,3 +125,7 @@ From the plan in the epic, each for a reason found while building it:
   floor is 22.19.
 - `packages/web/tsconfig.json` sets `skipLibCheck`, because the type files of
   Playwright 1.55 use syntax that TypeScript 7 refuses.
+- Views call `h` instead of writing JSX. Vite only strips JSX and a custom
+  `jsxFactory` needs classic mode, whose factories must live in a `.jsx` file —
+  so the reconciler and its two companions would have come with a build transform
+  and a second file extension to explain. `h` is checked by `tsc` the same way.

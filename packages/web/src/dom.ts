@@ -1,26 +1,28 @@
 // The web layer's own rendering: no framework, and the file a project copied
-// from the billet owns and edits, as packages/web/src/route.tsx is today.
+// from the billet owns and edits, as packages/web/src/route.ts is today.
 //
-// Three pieces. `h` turns JSX into real DOM nodes. AtomElement uses the
+// Three pieces. `h` builds real DOM nodes from a tag, its props and its children.
+// `AtomElement` is the base a component that reads an atom extends, using the
 // platform's own lifecycle in place of hooks. `patch` is the reconciler, and it
 // exists for one reason: replacing a view's children wholesale passes every
 // content test while it moves focus to <body>, which is a keyboard and screen
 // reader failure. See packages/web/test/dom.test.ts.
-import { Effect } from "effect"
-import { type AsyncResult, type Atom, AtomRegistry } from "effect/reactivity"
+import { Cause, Effect } from "effect"
+import * as AtomRegistryNS from "effect/reactivity/AtomRegistry"
+import { AsyncResult, Atom } from "effect/reactivity"
+import type { AtomRegistry } from "effect/reactivity/AtomRegistry"
 
-export type Child = Node | string | number | boolean | null | undefined | ReadonlyArray<Child>
-
-type Props<E> = Partial<Omit<E, "children" | "role">> & { readonly role?: string; readonly children?: Child }
+export type Child =
+  | Node
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | (() => Child)
+  | ReadonlyArray<Child>
 
 declare global {
-  // JSX is the one thing here a browser does not do natively. It stays because
-  // tsc checks the tags and the props against HTMLElementTagNameMap, which a
-  // tagged `html` template would not. See jsxFactory in packages/web/tsconfig.json.
-  namespace JSX {
-    type Element = Node
-    type IntrinsicElements = { [T in keyof HTMLElementTagNameMap]: Props<HTMLElementTagNameMap[T]> }
-  }
   interface HTMLElementTagNameMap {
     "billet-app": BilletApp
     "atom-view": AtomView<unknown>
@@ -34,6 +36,11 @@ interface MadeFrom {
   readonly tag: unknown
   readonly props: Record<string, unknown> | null
   readonly children: Array<Child>
+  // How to build another element of the same kind. Only h sets it, because only h
+  // knows what the element was made from, and only h may build one: a custom element
+  // has to carry what it watches before the browser upgrades it, which happens the
+  // moment it is placed, so patch cannot build these itself.
+  build?: (children: Array<Child>) => HTMLElement
 }
 
 const madeFrom = new WeakMap<Node, MadeFrom>()
@@ -63,22 +70,23 @@ const normalizeHandlerName = (name: string) => {
   return handlerNames.has(lowered) ? lowered : name
 }
 
-// Flattens what a render returned into the nodes a parent should hold, so a view
-// can return an array, a nested array, or nothing at all. A repeated string is
-// the same Text node, so a piece of text that did not change is not rebuilt.
-const textCache = new Map<string, Text>()
+// A fresh Text node every time. A cache would hand the page a Text node the browser is
+// already showing somewhere else, and appending it would move it out of that place:
+// two "Notes" headings on one page would turn out to be the same node, and only the
+// page that placed it last would keep it.
+const textNode = (value: string): Text => new Text(value)
 
-const textNode = (value: string): Text => {
-  const found = textCache.get(value)
-  if (found !== undefined && found.isConnected === false) return found
-  const made = new Text(value)
-  textCache.set(value, made)
-  return made
-}
-
-export const nodes = (child: Child): Array<Node | string> => {
+export const nodes = (child: Child): Array<Node> => {
   if (Array.isArray(child)) return child.flatMap(nodes)
   if (child === null || child === undefined || typeof child === "boolean") return []
+  // A builder called here, at the place the child is placed, so an element built to
+  // go into the page has not been in one before — which is what lets a custom element
+  // watch its atom the moment the browser upgrades it, and what keeps a render from
+  // handing back a node the page is already showing. A class is a tag, not a builder:
+  // h builds it, which is the only way an element can carry what it watches before the
+  // browser upgrades it, and the only way it records what it was made from.
+  if (typeof child === "function")
+    return nodes(child.prototype instanceof HTMLElement ? h(child as unknown as new () => HTMLElement, null) : (child as () => Child)())
   return [child instanceof Node ? child : textNode(String(child))]
 }
 
@@ -86,11 +94,36 @@ export const nodes = (child: Child): Array<Node | string> => {
 // parsed as HTML. A title of "<img src=x>" stays text. h also records what it
 // made, which is how patch recognises its own work on a later render.
 export const h = (
-  tag: string | ((props: any) => Node),
+  tag: string | ((props: any) => Node) | (new () => HTMLElement),
   props: Record<string, unknown> | null,
   ...children: Array<Child>
 ): Node => {
-  if (typeof tag === "function") return tag({ ...props, children })
+  // A class first, because a class is a function too and a component is not a
+  // prototype-bearing constructor of an element.
+  if (typeof tag === "function" && tag.prototype instanceof HTMLElement) {
+    const view = tag as unknown as new () => HTMLElement
+    // What the view passed belongs to the element (a component reads it in its own
+    // connected), so building another of the same kind passes the same things again.
+    const made = (built: Array<Child>) => {
+      const element = new view() as HTMLElement & Record<string, unknown>
+      for (const [key, value] of Object.entries(props ?? {})) if (key !== "children") element[key] = value
+      element.append(...nodes(built))
+      return element
+    }
+    const element = made(children)
+    madeFrom.set(element, { tag, props: props ?? null, children, build: made })
+    return element
+  }
+  if (typeof tag === "function") {
+    // A component's props are its own. Handing a component a `children` it never
+    // asked for, and then recording that it made the element it returned, would tell
+    // patch the returned element carries those props — and patch would hand them to a
+    // kept node later, which is how a link built by a component ends up with a click
+    // that does not belong to it.
+    const args = { ...props } as Record<string, unknown>
+    if (children.length > 0) args.children = children
+    return (tag as (props: any) => Node)(args)
+  }
   const element = document.createElement(tag) as HTMLElement & Record<string, unknown>
   for (const [key, value] of Object.entries(props ?? {})) {
     const name = ATTRIBUTE_NAMES[key] ?? key
@@ -119,11 +152,11 @@ export const h = (
   return element
 }
 
-export const Fragment = ({ children }: { readonly children?: Child }): Node => {
-  const fragment = new DocumentFragment()
-  fragment.append(...nodes(children))
-  return fragment
-}
+// A fragment would *hold* the nodes, and holding moves them: the moment a view built
+// one, the nodes the render was about to hand over would be parented to it, and patch
+// would find the element for a slot already belonging to something else. So a fragment
+// stays what a fragment is used for here — the list of nodes a parent should hold.
+export const Fragment = ({ children }: { readonly children?: Child }): Array<Node> => nodes(children)
 
 // The registry belongs to the root element, so a test passes its own and two
 // instances on one page do not share state.
@@ -131,7 +164,7 @@ export class BilletApp extends HTMLElement {
   #registry: AtomRegistry | undefined
 
   get registry(): AtomRegistry {
-    if (this.#registry === undefined) this.#registry = AtomRegistry.make({ defaultIdleTTL: 400 })
+    if (this.#registry === undefined) this.#registry = AtomRegistryNS.make({ defaultIdleTTL: 400 })
     return this.#registry
   }
 
@@ -150,7 +183,11 @@ customElements.define("billet-app", BilletApp)
 // role queries in the tests keep working without Shadow DOM.
 export abstract class AtomElement extends HTMLElement {
   #stops: Array<() => void> = []
-  #connected = false
+  // Whether the element has drawn itself. h appends the children it was given when
+  // it builds an element, so one that also built its own markup in connected would
+  // hold it twice: connected runs once, the first time the element is in a page, and
+  // a re-attach only redraws an element that draws itself from what it watches.
+  #drawn = false
 
   get registry(): AtomRegistry {
     const host = this.closest("billet-app")
@@ -162,26 +199,68 @@ export abstract class AtomElement extends HTMLElement {
     this.#stops.push(this.registry.subscribe(atom, f, { immediate: true }))
   }
 
-  // The promise settles when the mutation does, as useAtomSet's promise mode does.
-  run<A, E, W>(atom: Atom.Writable<AsyncResult.AsyncResult<A, E>, W>, value: W) {
-    this.registry.set(atom, value)
-    return Effect.runPromise(AtomRegistry.getResult(this.registry, atom, { suspendOnWaiting: true }))
+  /**
+   * Fire a mutation and settle when it does: the promise a form holds while a note
+   * is saving, so it can keep the button off until a result arrives.
+   *
+   * The result is read through a subscription opened before the write, not through
+   * AtomRegistry.getResult. getResult waits for the atom's value to *change*, so a
+   * second save onto an atom that already holds a Failure of the same shape never
+   * settles and the caller's .then never runs. A subscription sees every write.
+   */
+  run<A, E, W>(atom: Atom.Writable<AsyncResult.AsyncResult<A, E>, W>, value: W): Promise<A> {
+    const registry = this.registry
+    return Effect.runPromise(
+      // toExit can also fail with NoSuchElementError, which a mutation that was
+      // just written never reaches; the channel is widened rather than asserted.
+      Effect.callback<A, E | Cause.NoSuchElementError>((resume) => {
+        let settled = false
+        const finish = (result: AsyncResult.AsyncResult<A, E>) => {
+          if (settled) return
+          settled = true
+          stop()
+          resume(AsyncResult.toExit(result))
+        }
+        const stop = registry.subscribe(atom, (result) => {
+          if (AsyncResult.isNotInitial(result) && !result.waiting) finish(result)
+        })
+        registry.set(atom, value)
+      })
+    )
   }
 
   abstract connected(): void
 
-  // connectedCallback runs again whenever the element is re-attached, which patch
-  // and a page change both cause. Building the view twice would double-bind its
-  // handlers, so connected runs once per element.
+  // A detach is not the end of an element: patch moves a node it is keeping, and a
+  // page change takes a page out and puts the next one in, both of which run this
+  // again for an element the page still holds. A piece of the page that draws itself
+  // has to draw again, and one that built its own markup has to not build it twice,
+  // which is what an element that appends guards with.
   connectedCallback() {
-    if (this.#connected) return
-    this.#connected = true
+    if (this.#drawn) {
+      this.reattached()
+      return
+    }
+    this.#drawn = true
     this.connected()
   }
 
-  disconnectedCallback() {
-    this.#connected = false
+  /**
+   * The element was taken out of a page and put back — which patch does to a node it
+   * only moved, and a page change does to the page that comes back. An element that
+   * draws itself from what it watches has to draw again, because the page it was
+   * placed in may not be the one it drew; one that built its own markup once (a form)
+   * still holds it, so it does nothing.
+   */
+  reattached(): void {}
+
+  // What ends the subscriptions is the element going away for good. Ending them on a
+  // detach instead leaves a view that was only moved unable to draw again, which
+  // reads as the page standing still while its data changes. A view is only retired
+  // from the page that holds it, which is what patch does to a node the render left.
+  override remove() {
     this.#stops.splice(0).forEach((stop) => stop())
+    super.remove()
   }
 }
 
@@ -190,13 +269,14 @@ const sameAs = (old: Node, node: Node): boolean => {
   if (node.nodeType === Node.TEXT_NODE) return old.nodeType === Node.TEXT_NODE && old.nodeValue === node.nodeValue
   const made = madeFrom.get(node)
   if (made === undefined || old.nodeType !== Node.ELEMENT_NODE) return false
+  // Only a node that is what this render says it is can be kept: the same tag, the
+  // same props, the same children. Both sides have to be h's own, because a node with
+  // no record of what it was made from proves nothing — isEqualNode sees attributes
+  // and text but not the handler behind an onclick, so it would keep a link that
+  // navigates to the wrong page and call that a match.
   const previous = madeFrom.get(old)
-  // The node was made by a previous render, so it is only the same row if the
-  // same data produced it. isEqualNode alone would compare attributes and text
-  // and miss the handler that closes over the row's data.
-  if (previous !== undefined) return sameMadeFrom(previous, made)
-  // Never made here, so nothing of ours can be stale inside it.
-  return old.isEqualNode(node)
+  if (previous === undefined) return false
+  return sameMadeFrom(previous, made)
 }
 
 const sameMadeFrom = (a: MadeFrom, b: MadeFrom): boolean =>
@@ -211,49 +291,88 @@ const sameProps = (a: Record<string, unknown> | null, b: Record<string, unknown>
   return true
 }
 
-const sameValue = (a: unknown, b: unknown): boolean =>
-  a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameValue(x, b[i])))
+const sameValue = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => sameValue(x, b[i]))
+  }
+  // Two different functions are never the same prop. A handler closes over data,
+  // so a row whose handler changed is a different row and must not be reused with
+  // the old closure still attached.
+  return false
+}
 
 const sameChildren = (a: Array<Child>, b: Array<Child>): boolean => {
-  const [left, right] = [nodes(a).map(asText), nodes(b).map(asText)]
+  const [left, right] = [nodes(a).map(childKey), nodes(b).map(childKey)]
   return left.length === right.length && left.every((x, i) => x === right[i])
 }
 
-const asText = (node: Node | string): Node | string => (typeof node === "string" ? node : nodeToKey(node))
+// A child is a node, an array, or nothing; the key of a list of them is the keys of
+// the nodes it flattens to, joined.
+const childKey = (child: Child): string => nodes(child).map(nodeKeyOf).join("")
 
-// A shallow structural key of a node made by h, so children compare by what they
-// were made from and not by walking live DOM.
-const nodeToKey = (node: Node): string => {
+const childrenKey = (children: Array<Child>): string => children.map(childKey).join("")
+
+const nodeKeyOf = (node: Node): string => {
   const made = madeFrom.get(node)
   if (made === undefined) return `${node.nodeType}:${node.nodeName}:${node.textContent ?? ""}`
-  const props = Object.entries(made.props ?? {})
-    .filter(([key]) => key !== "children")
-    .map(([key, value]) => `${key}=${propKey(value)}`)
-    .sort()
-    .join(",")
-  const children = nodes(made.children).map((child) => (typeof child === "string" ? child : nodeToKey(child))).join("")
-  const tag = typeof made.tag === "function" ? made.tag.name : String(made.tag)
-  return `<${tag} ${props}>${children}</${tag}>`
+  return madeKey(made)
 }
 
+const madeKey = (made: MadeFrom): string => {
+  const props = Object.entries(made.props ?? {})
+    .filter(([key]) => key !== "children")
+    .map(([key, value]) => `${key}=${propValueKey(value)}`)
+    .sort()
+    .join(",")
+  const tag = typeof made.tag === "function" ? made.tag.name : String(made.tag)
+  return `<${tag} ${props}>${childrenKey(made.children)}</${tag}>`
+}
+
+// A value as data, or as the identity it has. An array of children is children, so it
+// keeps comparing structurally; a handler or an object is compared by identity, so a
+// node whose prop came from a different render is a different node.
+const propValueKey = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map((x) => (x === null || typeof x !== "object" ? String(x) : nodeKeyOf(x as Node))).join(",")}]`
+  return propKey(value)
+}
+
+// A key for a prop that says whether a kept node could keep working. A function is
+// never the same function twice and an object carries no identity of its own, so both
+// make the node different: a Link whose href changed is a different link, and keeping
+// the old node would keep the click that sends a person to where the last page sent
+// them. Text is compared as text, because a label is the same label.
 const propKey = (value: unknown): string => {
-  if (typeof value === "function") return "fn"
-  if (typeof value === "object" && value !== null) return "obj"
-  return String(value)
+  if (typeof value === "function") return `fn:${fnId(value)}`
+  if (typeof value === "object" && value !== null) return `obj:${objId(value)}`
+  return `val:${typeof value}:${String(value)}`
+}
+
+const fnIds = new WeakMap<Function, number>()
+let nextId = 0
+const fnId = (fn: Function) => {
+  const found = fnIds.get(fn)
+  if (found !== undefined) return found
+  const made = nextId++
+  fnIds.set(fn, made)
+  return made
+}
+
+const objIds = new WeakMap<object, number>()
+const objId = (obj: object) => {
+  const found = objIds.get(obj)
+  if (found !== undefined) return found
+  const made = nextId++
+  objIds.set(obj, made)
+  return made
 }
 
 // Reconcile the children of `parent` against `next`, keeping every node that did
 // not change so focus, selection, caret position and an in-flight animation stay
 // where they were. Custom elements are never reused: they hold their own state,
 // and rebuilding one is what a view change asks for.
-export const patch = (parent: Node, next: ReadonlyArray<Node | string>) => {
-  const wanted = next.flatMap((node) =>
-    typeof node === "string"
-      ? [textNode(node)]
-      : node instanceof DocumentFragment
-        ? [...node.childNodes]
-        : [node]
-  )
+export const patch = (parent: Node, next: Child) => {
+  const wanted = nodes(next)
 
   const spare = [...parent.childNodes]
   const kept: Array<Node> = []
@@ -272,45 +391,83 @@ export const patch = (parent: Node, next: ReadonlyArray<Node | string>) => {
       continue
     }
     const isElement = node.nodeType === Node.ELEMENT_NODE
-    const reusable = isElement && !node.nodeName.includes("-")
 
-    let match = spare.findIndex((old) => !claimed.has(old) && sameAs(old, node))
-    if (match === -1 && isElement) {
+    // A node is kept when it is the node the last render made (identity) or the
+    // same node made from the same data. Position is not part of it: a row that
+    // moved in the list is still that row, and a field a person is typing in is
+    // still their field.
+    // A custom element carries state no other node can take over — a form's field, a
+    // view's subscription — and no other node may be given its identity either: a
+    // later render that matched one by shape would stamp what it wanted onto whichever
+    // element the page happened to hold there, then throw its own element away and
+    // keep the wrong one. So it matches by identity and nothing else. A plain node
+    // carries nothing, so its shape is enough, and keeping the shell the page holds is
+    // what keeps a focus and a caret.
+    const isCustom = isElement && node.nodeName.includes("-")
+    const shown = isElement && node.parentNode === parent
+    let match = spare.findIndex((old) => !claimed.has(old) && (isCustom ? old === node : sameAs(old, node)))
+    if (match === -1 && isElement && !isCustom && !shown) {
       // Same tag, different content: keep the shell and fix what is inside it, so
-      // a focus inside it survives an update of its text.
-      match = reusable
-        ? spare.findIndex((old) => !claimed.has(old) && old.nodeName === node.nodeName && !old.nodeName.includes("-"))
-        : -1
+      // a focus inside it survives an update of its text. A view keeps no node
+      // between renders, so this is how an unchanged page keeps its caret.
+      match = spare.findIndex((old) => !claimed.has(old) && old.nodeName === node.nodeName && !old.nodeName.includes("-"))
     }
 
     if (match === -1) {
-      // A node made this render. Nothing else can claim it, and a node still held
-      // elsewhere is copied rather than moved, so patch cannot lose a subtree.
-      const made = node.parentNode === null ? node : node.cloneNode(true)
+      // A node not in a page yet is placed as it is. One the page holds has to become
+      // a second node of the same kind, because a node is only ever in the tree once:
+      // a custom element is built again by h (a clone would not carry the atom, and
+      // its connected could not open the watch it draws itself from), and a plain node
+      // is copied, because a plain node carries nothing but what it looks like.
+      let made: Node
+      if (node.parentNode === null) made = node
+      else if (isCustom) {
+        const built = madeFrom.get(node)
+        // Only h builds these, so an element with no record of what it was made from
+        // cannot be built again: what it watches is lost, and a view that watches
+        // nothing shows an empty page forever. That is a bug in this file, not a thing
+        // a page can do, so it says so instead of failing quietly.
+        if (built?.build === undefined) {
+          throw new Error(`${node.nodeName.toLowerCase()} is in the page but was not built by h, so it cannot be placed twice`)
+        }
+        made = built.build(built.children)
+      } else made = node.cloneNode(true)
       claimed.add(made)
       kept.push(made)
       continue
     }
 
-    const [old] = spare.splice(match, 1) as [Node]
+    const old = spare.splice(match, 1)[0] as Node
     claimed.add(old)
-    if (old !== node && isElement) {
+    if (isElement) {
+      // The props belong to the element, and patch only ever recurses into children,
+      // so they have to be applied here, and before it does. This is how a view that
+      // the page keeps gets the thing it watches: an element kept for its shape and
+      // never given the atom or the render the slot now asks for would go on drawing
+      // the page that was here before, which reads as the data changing and the page
+      // not. A route hands its element the function that draws the path this way too —
+      // without it a back button looks dead while the address bar moves.
       updateAttributes(old as Element, node as Element)
       copyProperties(old as HTMLElement, node as HTMLElement)
-      // A form or an input keeps its own value, and a kept node must not show a
-      // value from an earlier render. h sets these as properties, so patch copies
-      // them too, but never over a value the person typed.
+      // A form or an input keeps its own value, and a kept node must not show a value
+      // from an earlier render. h sets these as properties, so patch copies them too,
+      // but never over a value the person typed.
       copyFormProperties(old as HTMLElement, node as HTMLElement)
-    }
-    if (isElement) {
+      // Always: a node kept for its shape alone carries the children of the page that
+      // was here before, and this is the only place that brings them round to what the
+      // render wants. Skipping it for a node that was not made the same way leaves the
+      // page showing the page that came before — a back button that does nothing while
+      // the address bar moves.
       patch(old, [...node.childNodes])
-      const made = madeFrom.get(node)
-      if (made !== undefined) madeFrom.set(old, made)
     }
     kept.push(old)
   }
 
-  for (const old of spare) if (old.parentNode === parent) parent.removeChild(old)
+  // Anything still in the parent that this pass did not place came from an earlier
+  // render and is retired. Without this the page keeps a node the render did not ask
+  // for beside the ones it did, and the first of them wins every query a test or a
+  // person makes, so the page looks as if nothing had changed.
+  for (const old of [...parent.childNodes]) if (!kept.includes(old)) parent.removeChild(old)
 
   let cursor: Node | null = parent.firstChild
   for (const node of kept) {
@@ -351,17 +508,23 @@ const EVENT_PROPS = [
 ] as const
 
 const copyProperties = (old: HTMLElement, node: HTMLElement) => {
-  for (const name of [...EVENT_PROPS, ...Object.keys(node)]) {
+  // A handler is *the* handler, not one of them. A kept node has to end up holding
+  // exactly what this render says, including nothing: a node the page kept across two
+  // pages would otherwise keep the click of the page that came before, so the link
+  // the person is pressing would take them to where the earlier page sent them.
+  const names = new Set<string>([...EVENT_PROPS, ...Object.keys(node)])
+  for (const name of names) {
     if (!isHandlerProp(name)) continue
     const next = (node as any)[name]
-    if (next !== undefined && next !== (old as any)[name]) (old as any)[name] = next
+    if (next !== undefined) (old as any)[name] = next
+    else if ((old as any)[name] !== null && (old as any)[name] !== undefined) (old as any)[name] = null
   }
 }
 
 // hidden and disabled are properties, and isEqualNode cannot see a property, so a
 // kept node would stay stuck disabled after a save, or stuck hidden after a save
 // that failed. A field is different: its value belongs to the person, not the
-// render. h can only set value as an attribute, which sets the field's *default*,,
+// render. h can only set value as an attribute, which sets the field's *default*,
 // so a reused field keeps what was typed and a fresh one still gets the value
 // from data. Never assign a kept field's value here, or every re-render would
 // clear what someone is typing.
@@ -378,18 +541,37 @@ class AtomView<A> extends AtomElement {
   atom!: Atom.Atom<A>
   render!: (value: A) => Child
 
-  connected() {
-    this.watch(this.atom, (value) => patch(this, nodes(this.render(value))))
+  // A view draws itself from the atom it watches. h sets both when it builds the
+  // element, so one patch hands over already has what it needs; one without an atom
+  // could only be an element patch built itself, which cannot happen.
+  //
+  // The first connect opens the watch, whose immediate call draws. A re-attach (which
+  // patch causes for a node it only moved, and a page change for the page that comes
+  // back) redraws from the last value, because the element was only taken out and put
+  // back — the page that sits in it now is the one patch placed there, and an element
+  // that stayed quiet would keep drawing over it from a stale watch or not at all.
+  #last: A | undefined
+  #opened = false
+
+  connected(): void {
+    this.#opened = true
+    this.watch(this.atom, (value) => {
+      this.#last = value
+      patch(this, this.render(value))
+    })
+  }
+
+  override reattached(): void {
+    if (this.atom === undefined || !this.#opened) return
+    if (this.#last !== undefined) patch(this, this.render(this.#last))
   }
 }
 customElements.define("atom-view", AtomView)
 
-// A piece of the page drawn again whenever its atom changes.
-export const view = <A>(atom: Atom.Atom<A>, render: (value: A) => Child): Node => {
-  const element = new AtomView<A>()
-  element.atom = atom
-  element.render = render
-  return element
-}
+// A view is built again for every render, so patch is never handed an element the page
+// already holds: a node the browser is showing belongs to that page, and a render that
+// handed it back could not be told from the page a person is looking at.
+export const view = <A>(atom: Atom.Atom<A>, render: (value: A) => Child): () => Node =>
+  () => h(AtomView, { atom, render })
 
 

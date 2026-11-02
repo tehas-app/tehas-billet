@@ -2,9 +2,10 @@
 //
 // patch is a reconciler we own, and a reconciler that replaces a view's children
 // wholesale passes every content test while it moves focus to <body>. These are
-// the tests the React suite never needed, because React did this for us.
+// the invariants a framework usually holds for you, and hold quietly, so they are
+// tested here where they are ours to break.
 import { afterEach, assert, beforeEach, describe, expect, it } from "vitest"
-import { Fragment, h, nodes, patch } from "../src/dom.ts"
+import { Fragment, h, nodes, patch, type Child } from "../src/dom.ts"
 
 const render = (parent: Node, children: Parameters<typeof patch>[1]) => patch(parent, nodes(children))
 
@@ -44,14 +45,18 @@ describe("h", () => {
   })
 
   it("calls a function tag with its props and children", () => {
-    const Tag = ({ children }: { readonly children?: unknown }) => h("em", null, children)
+    const Tag = ({ children }: { readonly children?: Child }) => h("em", null, children)
     assert.strictEqual((h(Tag, null, "y") as HTMLElement).outerHTML, "<em>y</em>")
   })
 
-  it("Fragment holds children without an element of its own", () => {
-    const frag = h(Fragment, null, "a", h("b", null, "b"))
-    assert.instanceOf(frag, DocumentFragment)
-    assert.strictEqual(frag.childNodes.length, 2)
+  it("Fragment is the list of nodes a parent should hold, and holds nothing itself", () => {
+    // A fragment that held its children would take them out of the render that made
+    // them, because appending moves. A fragment is a list.
+    const children = Fragment({ children: ["a", h("b", null, "b")] })
+    assert.isArray(children)
+    assert.lengthOf(children, 2)
+    assert.isNull(children[0]?.parentNode)
+    assert.isNull(children[1]?.parentNode)
   })
 })
 
@@ -148,8 +153,8 @@ describe("patch keeps the content right", () => {
 })
 
 describe("patch keeps focus, which is why it exists", () => {
-  const listWith = (count: number, extra: Node) =>
-    h(Fragment, null, extra, h("ul", null, ...Array.from({ length: count }, (_, i) => h("li", null, `row ${i}`))))
+  const listWith = (count: number, extra: Node): Array<Node> =>
+    Fragment({ children: [extra, h("ul", null, ...Array.from({ length: count }, (_, i) => h("li", null, `row ${i}`)))] })
 
   it("keeps focus in an input while the list is drawn again", () => {
     render(root, listWith(1, h("input", { id: "title" })))
@@ -277,6 +282,10 @@ describe("patch keeps focus, which is why it exists", () => {
   it("unsticks disabled when a render stops setting it", () => {
     // The Add button would stay disabled forever after one render set it, since
     // isEqualNode cannot see a property and attributes only ever got added.
+    // Two renders of one view: the second makes the button again without it. The
+    // first render's node is the one at that position, so it is kept, and a
+    // property the new render stopped setting has to be cleared. h sets disabled
+    // as a property, which isEqualNode cannot see.
     render(root, h("button", { disabled: true }, "Adding\u2026"))
     const button = root.querySelector("button") as HTMLButtonElement
     render(root, h("button", { disabled: false }, "Add"))
@@ -363,12 +372,13 @@ describe("patch cost stays usable for a list", () => {
   })
 
   it("patching the same render twice gives the same result", () => {
-    // A fragment empties when its children are moved, so patch has to copy what it
-    // is given. If it did not, a memoized view patched twice would clear the page.
-    const view = h(Fragment, null, h("p", null, "a"), h("p", null, "b"))
-    patch(root, nodes(view))
+    // A render hands over the list of nodes it made. patch places them, and a second
+    // patch of that same list has to leave the page as it is — the nodes are already
+    // there, so there is nothing to take away.
+    const view = Fragment({ children: [h("p", null, "a"), h("p", null, "b")] })
+    patch(root, view)
     const after = root.textContent
-    patch(root, nodes(view))
+    patch(root, view)
     assert.strictEqual(root.textContent, after, "a second patch of the same render changed the page")
     assert.strictEqual(root.textContent, "ab")
   })
