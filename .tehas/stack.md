@@ -11,6 +11,8 @@
 - Node.js 22.19 or newer. `@effect/platform-node` asks for that.
 - Rust for measured hot paths only, built from source as a napi-rs addon. It
   loads on Linux: the build copies `libexample.so`.
+- Rust 1.99.1, named by `rust-toolchain.toml`; `preview/Dockerfile` builds on
+  the same version.
 - Exact versions are in `package.json`, `package-lock.json` and `Cargo.lock`.
 
 ## Frameworks
