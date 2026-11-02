@@ -43,6 +43,16 @@ const madeFrom = new WeakMap<Node, MadeFrom>()
 // function is always a handler here and never data.
 const isHandlerProp = (name: string) => name.startsWith("on") && name.length > 2
 
+// The properties that would let a prop parse markup or erase what patch built.
+// A billet is copied and its call sites change, so the primitive has to refuse
+// these and not rely on nobody passing them.
+const FORBIDDEN_PROPS = new Set(["innerHTML", "outerHTML", "textContent", "innerText", "style"])
+
+// JSX writes className and htmlFor; the DOM has class and for. Normalising here
+// keeps one spelling of the truth in the DOM, so a reused node cannot keep a
+// class from an earlier render because the two spellings raced.
+const ATTRIBUTE_NAMES: Record<string, string> = { className: "class", htmlFor: "for" }
+
 // The DOM property is all lowercase (onsubmit), but a view may write onSubmit as
 // JSX does. A name already in the DOM's own casing (onclick, onsubmit) is used as
 // it stands, so nothing here guesses at a property the browser does not have.
@@ -82,8 +92,12 @@ export const h = (
 ): Node => {
   if (typeof tag === "function") return tag({ ...props, children })
   const element = document.createElement(tag) as HTMLElement & Record<string, unknown>
-  for (const [name, value] of Object.entries(props ?? {})) {
+  for (const [key, value] of Object.entries(props ?? {})) {
+    const name = ATTRIBUTE_NAMES[key] ?? key
     if (name === "children") continue
+    if (FORBIDDEN_PROPS.has(name)) {
+      throw new TypeError(`${tag} got the prop ${name}, which would let markup be parsed. Put text in a text node.`)
+    }
     if (isHandlerProp(name) || typeof value === "function") {
       // A handler is a DOM event property (onclick), never a junk expando. Assign
       // it: the browser's own accessor already stores it and fires it. Defining an
@@ -136,6 +150,7 @@ customElements.define("billet-app", BilletApp)
 // role queries in the tests keep working without Shadow DOM.
 export abstract class AtomElement extends HTMLElement {
   #stops: Array<() => void> = []
+  #connected = false
 
   get registry(): AtomRegistry {
     const host = this.closest("billet-app")
@@ -155,11 +170,17 @@ export abstract class AtomElement extends HTMLElement {
 
   abstract connected(): void
 
+  // connectedCallback runs again whenever the element is re-attached, which patch
+  // and a page change both cause. Building the view twice would double-bind its
+  // handlers, so connected runs once per element.
   connectedCallback() {
+    if (this.#connected) return
+    this.#connected = true
     this.connected()
   }
 
   disconnectedCallback() {
+    this.#connected = false
     this.#stops.splice(0).forEach((stop) => stop())
   }
 }
@@ -263,6 +284,10 @@ export const patch = (parent: Node, next: ReadonlyArray<Node | string>) => {
     if (old !== node && isElement) {
       updateAttributes(old as Element, node as Element)
       copyProperties(old as HTMLElement, node as HTMLElement)
+      // A form or an input keeps its own value, and a kept node must not show a
+      // value from an earlier render. h sets these as properties, so patch copies
+      // them too, but never over a value the person typed.
+      copyFormProperties(old as HTMLElement, node as HTMLElement)
     }
     if (isElement) {
       patch(old, [...node.childNodes])
@@ -317,6 +342,22 @@ const copyProperties = (old: HTMLElement, node: HTMLElement) => {
     if (!isHandlerProp(name)) continue
     const next = (node as any)[name]
     if (next !== undefined && next !== (old as any)[name]) (old as any)[name] = next
+  }
+}
+
+// hidden and disabled are properties, and isEqualNode cannot see a property, so a
+// kept node would stay stuck disabled after a save, or stuck hidden after a save
+// that failed. A field is different: its value belongs to the person, not the
+// render. h can only set value as an attribute, which sets the field's *default*,,
+// so a reused field keeps what was typed and a fresh one still gets the value
+// from data. Never assign a kept field's value here, or every re-render would
+// clear what someone is typing.
+const copyFormProperties = (old: HTMLElement, node: HTMLElement) => {
+  for (const name of ["disabled", "hidden", "checked", "selected", "required", "multiple"] as const) {
+    if (name in node && (node as any)[name] !== (old as any)[name]) (old as any)[name] = (node as any)[name]
+  }
+  for (const name of ["src", "href", "alt", "placeholder"] as const) {
+    if (name in node && (node as any)[name] !== (old as any)[name]) (old as any)[name] = (node as any)[name]
   }
 }
 

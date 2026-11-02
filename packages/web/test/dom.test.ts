@@ -245,6 +245,71 @@ describe("patch keeps focus, which is why it exists", () => {
     assert.strictEqual(div.getAttribute("addEventListener"), "x")
   })
 
+  it("refuses a prop that would let markup be parsed", () => {
+    // The primitive is copied into new projects, so it has to refuse these
+    // itself. Passing innerHTML through a prop is how a later call site ships
+    // an injection hole while every line above it still says "no innerHTML".
+    assert.throws(() => h("a", { href: "/x", innerHTML: "<b>injected</b>" }), TypeError)
+    assert.throws(() => h("div", { outerHTML: "<b>x</b>" }), TypeError)
+    assert.throws(() => h("div", { textContent: "x" }), TypeError)
+    assert.throws(() => h("div", { innerText: "x" }), TypeError)
+    assert.throws(() => h("div", { style: "color: red" }), TypeError)
+  })
+
+  it("normalises className and htmlFor to the DOM's own names", () => {
+    const div = h("div", { className: "row", htmlFor: "title" }) as HTMLElement
+    assert.strictEqual(div.getAttribute("class"), "row")
+    assert.strictEqual(div.getAttribute("for"), "title")
+  })
+
+  it("removes an attribute the new render dropped", () => {
+    // The four states of an AsyncResult differ only by attributes on a <p>, so a
+    // Loading paragraph reused as the error paragraph would inherit role="alert"
+    // and announce the wrong thing.
+    render(root, h("p", { role: "alert", "aria-live": "polite" }, "There is no note 9."))
+    const alert = root.querySelector("p")!
+    render(root, h("p", null, "Loading\u2026"))
+    assert.strictEqual(root.querySelector("p"), alert, "the <p> should be reused, not rebuilt")
+    assert.strictEqual(alert.hasAttribute("role"), false, "role stayed on a node whose render dropped it")
+    assert.strictEqual(alert.hasAttribute("aria-live"), false)
+  })
+
+  it("unsticks disabled when a render stops setting it", () => {
+    // The Add button would stay disabled forever after one render set it, since
+    // isEqualNode cannot see a property and attributes only ever got added.
+    render(root, h("button", { disabled: true }, "Adding\u2026"))
+    const button = root.querySelector("button") as HTMLButtonElement
+    render(root, h("button", { disabled: false }, "Add"))
+    assert.strictEqual(button.disabled, false, "the button stayed disabled after the render dropped it")
+  })
+
+  it("unsticks hidden when a render stops setting it", () => {
+    render(root, h("p", { role: "alert", hidden: true }, "Saved"))
+    const alert = root.querySelector("p") as HTMLElement
+    assert.strictEqual(alert.hidden, true)
+    render(root, h("p", { role: "alert" }, "Saved"))
+    assert.strictEqual(alert.hidden, false, "the alert stayed hidden after the render dropped it")
+  })
+
+  it("keeps what a person typed in a field that patch reuses", () => {
+    render(root, h("input", { type: "text", name: "title", placeholder: "Title" }))
+    const input = root.querySelector("input") as HTMLInputElement
+    input.value = "typed by a person"
+    render(root, h("input", { type: "text", name: "title", placeholder: "Title" }))
+    assert.strictEqual(root.querySelector("input"), input, "the input should be reused")
+    assert.strictEqual(input.value, "typed by a person", "patch overwrote what the person had typed")
+  })
+
+  it("gives a field made for a new note the value from data", () => {
+    // A field built for a note whose value came from the server gets that value,
+    // because h sets value as an attribute, which is the field's default.
+    const fresh = h("input", { type: "text", value: "from the server" }) as HTMLInputElement
+    assert.strictEqual(fresh.value, "from the server")
+    // Same attribute through a first render into an empty parent.
+    render(root, h("input", { type: "text", value: "from the server" }))
+    assert.strictEqual((root.querySelector("input") as HTMLInputElement).value, "from the server")
+  })
+
   it("keeps one handler, not two, when a row did not change", () => {
     let count = 0
     const row = () =>
