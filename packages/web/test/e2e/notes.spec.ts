@@ -55,8 +55,14 @@ test.afterAll(() => {
 })
 
 test("a note goes from the form to SQLite and back, with the word count from Rust", async ({ page }) => {
+  const scripts: Array<string> = []
+  page.on("request", (request) => {
+    if (request.resourceType() === "script") scripts.push(new URL(request.url()).pathname)
+  })
+
   await page.goto(base)
   await expect(page.getByText("No notes yet.")).toBeVisible()
+  await page.waitForLoadState("networkidle")
 
   await page.getByLabel("New note").fill("ship the billet")
   await page.getByRole("button", { name: "Add" }).click()
@@ -66,16 +72,21 @@ test("a note goes from the form to SQLite and back, with the word count from Rus
   await expect(row.getByText("3 words")).toBeVisible()
   await expect(page.getByLabel("New note")).toHaveValue("")
 
+  // The list is an island of its own, so the note reached it through the atoms
+  // the two islands share, and the form never touched it.
+  scripts.length = 0
   await row.getByRole("link").click()
   await expect(page.getByRole("heading", { name: "ship the billet" })).toBeVisible()
   await expect(page).toHaveURL(/\/notes\/1$/)
+  expect(scripts).toEqual([])
 
   await page.reload()
   await expect(page.getByRole("heading", { name: "ship the billet" })).toBeVisible()
   await expect(page.getByText("3 words")).toBeVisible()
 })
 
-test("a note that does not exist is named on its page", async ({ page }) => {
-  await page.goto(`${base}/notes/999`)
+test("a note that does not exist is named on its page, with a 404", async ({ page }) => {
+  const response = await page.goto(`${base}/notes/999`)
+  expect(response?.status()).toBe(404)
   await expect(page.getByText("There is no note 999.")).toBeVisible()
 })

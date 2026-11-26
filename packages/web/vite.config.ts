@@ -1,13 +1,27 @@
-import react from "@vitejs/plugin-react"
+import solid from "@solidjs/vite-plugin"
 import { defineConfig } from "vite"
 
-// `npm run dev -w @billet/web` serves the page; the API stays on the server.
+// One `vite build` makes two bundles. The client one holds the islands and the
+// stylesheet, under fixed names that the server's pages link to. The server one
+// renders those pages, and `packages/server/src/pages.ts` loads it.
 export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      "/api": "http://localhost:8080",
-      "/health": "http://localhost:8080"
+  plugins: [solid({ ssr: true })],
+  builder: {},
+  environments: {
+    client: {
+      build: {
+        outDir: "dist/client",
+        rollupOptions: {
+          input: { main: "src/main.tsx", style: "src/style.css" },
+          output: { entryFileNames: "assets/[name].js", assetFileNames: "assets/[name][extname]" }
+        }
+      }
+    },
+    ssr: {
+      build: {
+        outDir: "dist/server",
+        rollupOptions: { input: { server: "src/server.tsx" } }
+      }
     }
   }
 })
