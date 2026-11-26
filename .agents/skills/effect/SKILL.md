@@ -162,11 +162,12 @@ const makeClient = HttpApiTest.groups(Api, ["notes"])
       assert.strictEqual(error._tag, "NotFound")
 ```
 
-## The React bindings
+## Atoms in Solid islands
 
-`ai-docs` has no page on these. This section and `packages/web/` are the reference,
-with the source in `node_modules/@effect/atom-react/src/Hooks.ts` and
-`node_modules/effect/src/reactivity/AtomHttpApi.ts`.
+`ai-docs` has no page on atoms, and `@effect/atom-solid` asks for Solid 1. This
+section and `packages/web/` are the reference, with the source in
+`node_modules/effect/src/reactivity/`. For Solid 2 itself, read
+`node_modules/solid-js/CHEATSHEET.md` first.
 
 The client is derived from the API. A query is an atom, and `query` keeps one atom
 for each set of arguments, so calling it during a render is safe.
@@ -178,24 +179,50 @@ export class NotesClient extends AtomHttpApi.Service<NotesClient>()("@billet/web
 }) {}
 ```
 
+A query the server renders has a `serializationKey`, which makes it an atom the
+server can hand to the page.
+
 ```ts packages/web/src/client.ts
-export const notes = NotesClient.query("notes", "list", { reactivityKeys: [notesKey] })
-export const note = (id: number) => NotesClient.query("notes", "read", { params: { id } })
+export const notes = NotesClient.query("notes", "list", { reactivityKeys: [notesKey], serializationKey: "all" })
 export const createNote = NotesClient.mutation("notes", "create")
 ```
 
-A mutation that names the key refreshes each query that names it, so there is no
-manual refresh.
+The server seeds a registry for each request with what it read from SQLite.
+`skipInitialRun` keeps the seed, so the server fetches nothing:
 
-```tsx packages/web/src/App.tsx
+```tsx packages/web/src/server.tsx
+    { initialValues: [Atom.initialValue(notes, AsyncResult.success(list), { skipInitialRun: true })] },
+```
+
+After the render, `Hydration.dehydrate` writes the atoms the islands read into
+the page, and the page's entry hydrates one registry from them for every island:
+
+```tsx packages/web/src/main.tsx
+const registry = AtomRegistry.make()
+const state = document.getElementById("atoms")?.textContent
+if (state) Hydration.hydrate(registry, JSON.parse(state))
+```
+
+A component reads an atom as a signal. It subscribes in `onSettled`, which never
+runs on the server:
+
+```ts packages/web/src/atom.ts
+  const [value, setValue] = createSignal<A>(registry.get(atom) as Exclude<A, Function>)
+  onSettled(() => registry.subscribe(atom, (next) => setValue(() => next), { immediate: true }))
+```
+
+A mutation that names the key refreshes each query that names it, in every island
+on the page, so there is no manual refresh.
+
+```tsx packages/web/src/islands.tsx
     save({ payload: { title: trimmed }, reactivityKeys: [notesKey] }).then(
 ```
 
 A `mutation` is one atom per endpoint, and a call on it interrupts the call before.
 Where only one call can run, as in a form, keep the button off while it does:
 
-```tsx packages/web/src/App.tsx
-  const saving = AsyncResult.isWaiting(useAtomValue(createNote))
+```tsx packages/web/src/islands.tsx
+        <button type="submit" disabled={AsyncResult.isWaiting(result())}>Add</button>
 ```
 
 Where a person can start a second call while the first runs, as with a checkbox on
@@ -212,21 +239,11 @@ export const setTodoDone = TodosClient.runtime.fn<{ readonly id: number; readonl
 )
 ```
 
-A view matches on the result. `AsyncResult.builder` tells a declared error from
-any other failure.
-
-```tsx packages/web/src/App.tsx
-      {AsyncResult.builder(result)
-        .onInitial(() => <p>Loading…</p>)
-        .onErrorTag("NotFound", () => <p role="alert">There is no note {id}.</p>)
-        .onFailure(() => <p role="alert">The note could not be loaded.</p>)
-```
-
-A test replaces the client through the runtime's layer atom, so the components and
+A test replaces the client through the runtime's layer atom, so the islands and
 the atoms run unchanged.
 
-```tsx packages/web/test/App.test.tsx
-    <RegistryProvider initialValues={[[NotesClient.runtime.layer, fakeClient(stored)]]}>
+```tsx packages/web/test/islands.test.tsx
+  const registry = AtomRegistry.make({ initialValues: [[NotesClient.runtime.layer, fakeClient(stored, beforeSave)]] })
 ```
 
 ## Traps
@@ -249,22 +266,34 @@ Each of these was hit while building this repository, unless it says otherwise.
   statement, and the loader fails with a `MigrationError` on a file with two. A
   trigger has semicolons in its body, so the loader refuses that too.
 - **A second `mutation` call cancels the first, with no error.** The first request
-  is interrupted and its work may be lost. See The React bindings above.
+  is interrupted and its work may be lost. See Atoms in Solid islands above.
 - **A `Config` has no `.asEffect()`.** Yield it inside `Effect.gen`.
 - **The port opens before the handler attaches.** `NodeHttpServer` listens first
   and `HttpRouter.serve` attaches next, and a request in that gap is accepted and
   never answered. A probe of a starting server needs a timeout on each try, as in
   `scripts/smoke.sh`.
-- **`HttpStaticServer` with `spa: true` falls back only for a request that accepts
-  HTML** and a path with no extension. A browser sends that header and `curl` does
-  not.
+- **A seeded query atom lands on the atom inside it.** `Atom.initialValue` seeds
+  the inner atom, and `Hydration.dehydrate` finds only the serializable atom
+  around it, which has no node until a component reads it. Dehydrate after the
+  render, as `packages/web/src/server.tsx` does, or the page gets `[]`.
+- **A hydrated query fetches again once an island is on the page.** Only the
+  server's seed skips the first run, so the list refreshes once after load. The
+  view keeps the old value while it does.
 - **A curried combinator in a helper loses its types.** A bare
   `const notFound = Effect.catchTag(...)` fails in `tsc` with `never[]`. Take the
   effect as an argument.
 - **Do not use `.pipe` on `Effect.fn`.** The guide says to pass combinators as its
   later arguments. A `.pipe` inside the body is fine.
-- **`AtomHttpApi` turns a transport failure into a defect.** `onFailure` sees it and
-  `onError` does not, so a view needs `onFailure` as its last failure case.
+- **`AtomHttpApi` turns a transport failure into a defect.** `AsyncResult.isFailure`
+  and `onFailure` see it, and `onError` does not, so a view tests for any failure,
+  as `NoteList` does.
+- **An island's tree must be the same on both sides.** The server renders
+  `<Hydration id>` around `IslandRoot`, and the page hydrates `IslandRoot` with the
+  same `renderId`. A component between them on one side only moves the hydration
+  keys, and the island does not hydrate.
+- **A Solid 2 setter shows its value after a flush.** A browser flushes between
+  events and a test does not, so a test that types and then submits calls
+  `flush()` between, as `packages/web/test/islands.test.tsx` does.
 - **Node prints an `ExperimentalWarning` for SQLite.** Start with
   `node --disable-warning=ExperimentalWarning`.
 

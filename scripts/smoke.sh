@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the page, start the server on a free port with a temporary database,
+# Build the pages, start the server on a free port with a temporary database,
 # ask it the things a person would, and stop it. Run from anywhere.
 #
 # Usage: scripts/smoke.sh
@@ -72,9 +72,16 @@ check "GET /api/notes/999 is a 404" 404 "$(status "$base/api/notes/999")"
 
 check "GET /api/nope is a 404" 404 "$(status "$base/api/nope")"
 
-# The fallback to index.html answers only a request that accepts HTML.
-page() { curl -s -H 'accept: text/html' "$1" | grep -c '<div id="root">'; }
-check "GET / is the built page" 1 "$(page "$base/")"
-check "GET /notes/1 is the built page" 1 "$(page "$base/notes/1")"
+# The server renders each page. The home page carries its islands and their
+# script; a note's page is markup alone.
+has() { curl -s "$1" | grep -c "$2"; }
+check "GET / renders the islands" 1 "$(has "$base/" 'data-island="NoteList"')"
+check "GET / lists the note" 1 "$(has "$base/" '<a href="/notes/1">smoke</a>')"
+check "GET /notes/1 renders the note" 1 "$(has "$base/notes/1" '<h2>smoke</h2>')"
+check "GET /notes/1 has no script" 0 "$(has "$base/notes/1" '<script')"
+check "GET /notes/999 is a 404 page" 404 "$(status "$base/notes/999")"
+check "GET /nope is a 404 page" 404 "$(status "$base/nope")"
+check "GET /assets/main.js" 200 "$(status "$base/assets/main.js")"
+check "GET /assets/style.css" 200 "$(status "$base/assets/style.css")"
 
 [ "$failed" = 0 ] || exit 1

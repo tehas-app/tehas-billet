@@ -19,6 +19,12 @@ Effect 3. Before writing Effect code:
 3. Read the file here that already does what you need. The list is under
    Layout in `.tehas/stack.md`.
 
+Solid 2 differs a lot from Solid 1 and from React, and memory of either is a
+source of bugs. Before writing a component, read
+`node_modules/solid-js/CHEATSHEET.md`, and `packages/web/src/islands.tsx`. A
+part of a page that a person does not act on is markup in
+`packages/web/src/pages.tsx`, not an island.
+
 Run `scripts/worktree-setup.sh` first if `node_modules/` is missing. The docs
 above live there.
 

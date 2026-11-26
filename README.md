@@ -1,13 +1,14 @@
 # tehas-billet
 
-A reference stack for new web app projects: React, Effect on Node, SQLite and
-Rust. A billet is the small, complete app a new project starts from. It shows
+A reference stack for new web app projects: Solid islands, Effect on Node,
+SQLite and Rust. A billet is the small, complete app a new project starts from. It shows
 each layer once, and it is an npm workspace that stands on its own. The plan is
 in epic [#1](https://github.com/tehas-app/tehas-billet/issues/1).
 
 The app is a list of notes. Each note carries a word count from a Rust addon, so
-one request goes through every layer: the React page, the typed client, the
-Effect server, SQLite and Rust.
+one request goes through every layer: a Solid island, the typed client, the
+Effect server, SQLite and Rust. The server renders every page, and only the form
+and the list hydrate in the browser.
 
 ## Start
 
@@ -22,12 +23,14 @@ node --disable-warning=ExperimentalWarning packages/server/src/main.ts
 Open <http://localhost:8080>. The notes go in `billet.db` in the working
 directory. `PORT` and `DATABASE_FILE` change those two, and neither is needed.
 
-To work on the page with reloads, leave the server running and start Vite, which
-passes `/api` on to the server:
+To work on the pages, leave Vite rebuilding them:
 
 ```
 npm run dev -w @billet/web
 ```
+
+A change to an island shows on a reload of the page. A change to a page's
+markup needs the server started again, since it loads the server bundle once.
 
 ## What is here
 
@@ -38,7 +41,7 @@ npm run dev -w @billet/web
 | `.agents/skills/effect/SKILL.md` | How this repository uses Effect 4, with samples and traps |
 | `packages/api/` | `@billet/api`: the API definition, in Effect's `HttpApi` |
 | `packages/server/` | `@billet/server`: the handlers, SQLite, and the server |
-| `packages/web/` | `@billet/web`: the React page, on a client derived from the API |
+| `packages/web/` | `@billet/web`: the pages and their Solid islands, on a client derived from the API |
 | `migrations/` | Numbered plain SQL, run at start |
 | `crates/example/` | The Rust crate, built into a napi-rs addon |
 | `preview/Dockerfile` | One container with the server, the page and SQLite |
@@ -58,7 +61,7 @@ test/billet_test.sh
 
 `verify.sh` runs `tsc --noEmit` and Vitest, and needs no network. `verify-full.sh`
 adds the Vite build, `cargo test`, `cargo clippy`, `cargo fmt --check` and
-Playwright. `smoke.sh` builds the page, starts a real server on a free port with a
+Playwright. `smoke.sh` builds the pages, starts a real server on a free port with a
 temporary database, and asks it what a person would. Each prints one line per step
 and ends non-zero when a step failed.
 

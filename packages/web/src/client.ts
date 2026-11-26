@@ -10,6 +10,6 @@ export class NotesClient extends AtomHttpApi.Service<NotesClient>()("@billet/web
 // A mutation that names this key refreshes every query that names it.
 export const notesKey = "notes"
 
-export const notes = NotesClient.query("notes", "list", { reactivityKeys: [notesKey] })
-export const note = (id: number) => NotesClient.query("notes", "read", { params: { id } })
+// The serialization key lets the server hand the list it rendered to the page.
+export const notes = NotesClient.query("notes", "list", { reactivityKeys: [notesKey], serializationKey: "all" })
 export const createNote = NotesClient.mutation("notes", "create")
